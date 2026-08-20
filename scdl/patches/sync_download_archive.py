@@ -6,6 +6,8 @@ from pathlib import Path
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import locked_file, sanitize_filename
 
+from scdl.patches.archive_paths import to_absolute, to_relative
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,7 @@ class SyncDownloadHelper:
                     ie, id_, filename = line.split(maxsplit=2)
                     key = f"{ie} {id_}"
                     self._ydl.archive.add(key)
-                    self._all_files[key] = Path(filename)
+                    self._all_files[key] = to_absolute(filename)
                     self._preexisting.add(key)
         except OSError as ioe:
             if ioe.errno != errno.ENOENT:
@@ -159,7 +161,7 @@ class SyncDownloadHelper:
         with locked_file(self._sync_file, "w", encoding="utf-8") as archive_file:
             for k, v in self._all_files.items():
                 if k in self._downloaded or k in not_evaluated:
-                    archive_file.write(f"{k} {v}\n")
+                    archive_file.write(f"{k} {to_relative(v)}\n")
 
         failed_file = Path(self._sync_file).with_suffix(".failed")
         with locked_file(str(failed_file), "w", encoding="utf-8") as f:

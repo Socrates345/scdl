@@ -105,6 +105,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import locked_file, sanitize_filename
 
 from scdl import utils
+from scdl.patches.archive_paths import to_relative
 from scdl.patches.mutagen_postprocessor import MutagenPP
 from scdl.patches.original_filename_preprocessor import OriginalFilenamePP
 from scdl.patches.snip_detection_postprocessor import SnipDetectionPP
@@ -910,7 +911,7 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
             if _fl_found and scdl_args.get("sync"):
                 with locked_file(scdl_args["sync"], "a", encoding="utf-8") as archive_file:
                     for archive_id, matched_path in _fl_found.items():
-                        archive_file.write(f"{archive_id} {matched_path}\n")
+                        archive_file.write(f"{archive_id} {to_relative(matched_path)}\n")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ from pathlib import Path
 
 from mutagen import File as MutagenFile
 
+from scdl.patches.archive_paths import to_absolute
+
 ROOT = Path(__file__).parent.parent
 ARCHIVE_DIR = ROOT / "archive_trackers" / "sc"
 MAX_DURATION = 30  # seconds — SoundCloud snips are exactly 30s
@@ -65,7 +67,7 @@ def main() -> None:
                 keep.append(line)
                 continue
 
-            path = Path(path_str)
+            path = to_absolute(path_str)
             duration = get_duration(path) if path.exists() else None
             if duration is None or duration > MAX_DURATION:
                 keep.append(line)

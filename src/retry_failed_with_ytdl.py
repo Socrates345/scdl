@@ -32,6 +32,7 @@ from pathlib import Path
 from yt_dlp.utils import locked_file, sanitize_filename
 
 import ytdl
+from scdl.patches.archive_paths import to_absolute, to_relative
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
@@ -81,7 +82,7 @@ def _dest_folder(txt_path: Path) -> Path:
     for line in txt_path.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.strip().split(maxsplit=2)
         if len(parts) == 3:
-            return Path(parts[2]).parent
+            return to_absolute(parts[2]).parent
     sys.exit(f"{txt_path} has no entries — can't determine the playlist's download folder.")
 
 
@@ -180,7 +181,7 @@ def _process_failed_file(failed_path: Path, dry_run: bool, delay: float, cfg_coo
 
         print(f"  -> {found.name}")
         with locked_file(str(txt_path), "a", encoding="utf-8") as f:
-            f.write(f"soundcloud {track_id} {found}\n")
+            f.write(f"soundcloud {track_id} {to_relative(found)}\n")
         resolved_ids.add(track_id)
         resolved_entries.append(entry)
 

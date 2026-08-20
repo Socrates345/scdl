@@ -11,6 +11,8 @@ import re
 import sys
 from pathlib import Path
 
+from scdl.patches.archive_paths import to_absolute, to_relative
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 INDEX_RE = re.compile(r"^(\d+)\. ")
@@ -65,11 +67,11 @@ def migrate_archives(dry_run: bool) -> int:
         for line in lines:
             parts = line.split(" ", 2)
             if len(parts) == 3 and parts[0] == "soundcloud":
-                old_path = Path(parts[2])
+                old_path = to_absolute(parts[2])
                 new_name = _strip_index(old_path.name)
                 if new_name is not None:
                     new_path = old_path.parent / new_name
-                    line = f"soundcloud {parts[1]} {new_path}"
+                    line = f"soundcloud {parts[1]} {to_relative(new_path)}"
                     changed += 1
             new_lines.append(line)
         if changed:
