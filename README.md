@@ -23,6 +23,15 @@ uv sync --dev
 uv sync --upgrade-package yt-dlp
 ```
 
+To update the fork:
+```
+git merge upstream/master
+fix conflicts
+uv sync
+ruff check scdl/
+mypy
+pytest
+```
 ---
 
 # TODO

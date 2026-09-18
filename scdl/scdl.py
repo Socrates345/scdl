@@ -551,12 +551,10 @@ def _build_ytdl_params(url: str, scdl_args: SCDLArgs) -> tuple[str, dict, list]:
 
     _redacted = list(argv)
     for _flag in ("--password", "--username"):
-        try:
+        if _flag in _redacted:
             _i = _redacted.index(_flag)
             if _i + 1 < len(_redacted):
                 _redacted[_i + 1] = "***"
-        except ValueError:
-            pass
     logger.debug(f"[debug] yt-dlp args: {url} {' '.join(_redacted)}")
 
     return url, utils.cli_to_api(argv), postprocessors
@@ -747,8 +745,8 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
             # yt-dlp routes all screen output through logger.debug; the line
             # "[soundcloud] uploader/slug: Downloading info JSON" arrives here
             # before the format fetch, so we can backfill title/uploader.
-            _SC_INFO_PREFIX = "[soundcloud] "
-            _SC_INFO_SUFFIX = ": Downloading info JSON"
+            _sc_info_prefix = "[soundcloud] "
+            _sc_info_suffix = ": Downloading info JSON"
 
             class _TrackErrorLogger:
                 def debug(self, msg, *args, **kwargs):
@@ -757,10 +755,10 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
                         isinstance(msg, str)
                         and _current_aid[0]
                         and _current_aid[0] in _fl_attempted
-                        and msg.startswith(_SC_INFO_PREFIX)
-                        and msg.endswith(_SC_INFO_SUFFIX)
+                        and msg.startswith(_sc_info_prefix)
+                        and msg.endswith(_sc_info_suffix)
                     ):
-                        slug = msg[len(_SC_INFO_PREFIX):-len(_SC_INFO_SUFFIX)]
+                        slug = msg[len(_sc_info_prefix):-len(_sc_info_suffix)]
                         parts = slug.split("/")
                         entry = _fl_attempted[_current_aid[0]]
                         if not entry["uploader"] and len(parts) >= 1:
@@ -790,7 +788,7 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
             premium_log_path = scdl_args["premium_log"]
             _prem_old_match_entry = ydl._match_entry
 
-            def _prem_match_entry(ydl_, info_dict, incomplete=False, silent=False):
+            def _prem_match_entry(_ydl, info_dict, incomplete=False, silent=False):
                 result = _prem_old_match_entry(info_dict, incomplete, silent)
                 if result is not None and not incomplete:
                     duration = info_dict.get("duration")
@@ -802,8 +800,9 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
                             or ""
                         )
                         title = info_dict.get("title", "unknown")
-                        with open(premium_log_path, "a", encoding="utf-8") as fh:
-                            fh.write(f"{title} | {track_url} | {duration:.1f}s\n")
+                        if premium_log_path is not None:
+                            with open(premium_log_path, "a", encoding="utf-8") as fh:
+                                fh.write(f"{title} | {track_url} | {duration:.1f}s\n")
                 return result
 
             ydl._match_entry = _partial(_prem_match_entry, ydl)
@@ -865,6 +864,7 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
             )
             _fl_found: dict[str, Path] = {}  # archive_id -> matched existing file path
 
+            assert failed_log_path is not None
             with open(failed_log_path, "w", encoding="utf-8") as fh:
                 for archive_id, info in _fl_attempted.items():
                     if archive_id not in _fl_downloaded:
@@ -895,7 +895,11 @@ def download_url(url: str, **scdl_args: Unpack[SCDLArgs]) -> None:
                                 error_line = ""
                             else:
                                 tag = "[FAIL]    "
-                                error_line = f"       → policy={policy!r} — {error.strip()[:160]}\n" if policy else f"       → {error.strip()[:200]}\n"
+                                error_line = (
+                                    f"       → policy={policy!r} — {error.strip()[:160]}\n"
+                                    if policy
+                                    else f"       → {error.strip()[:200]}\n"
+                                )
                         else:
                             tag = "[FAIL]    "
                             error_line = f"       → {error.strip()[:200]}\n" if error else ""

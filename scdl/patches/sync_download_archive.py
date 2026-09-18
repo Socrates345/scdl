@@ -1,3 +1,4 @@
+import contextlib
 import errno
 import logging
 from functools import partial
@@ -121,10 +122,8 @@ class SyncDownloadHelper:
                 if not dst.exists():
                     src.rename(dst)
                     logger.info(f"[scdl]   moved {src.name}")
-            try:
+            with contextlib.suppress(OSError):
                 old_folder.rmdir()
-            except OSError:
-                pass
             moved[old_folder] = new_folder
 
         if moved:
@@ -143,10 +142,7 @@ class SyncDownloadHelper:
         # position, so they never appear in self._downloaded. Don't treat them as removed
         # from the playlist — preserve them in the archive as-is.
         offset = self._scdl_args.get("o")
-        if offset:
-            not_evaluated = self._preexisting - self._downloaded
-        else:
-            not_evaluated = set()
+        not_evaluated = self._preexisting - self._downloaded if offset else set()
 
         # rename files for tracks no longer in the playlist
         to_unsync = {
