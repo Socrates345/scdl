@@ -24,3 +24,10 @@ path =
 # video_path = playlists\yt-video
 
 video_path =
+
+# Max video height for --video downloads (360, 480, 720, 1080, ...), or "best" for no cap.
+# Overridden per run by --res. Leave empty for the built-in default (360).
+# Example:
+# video_res = 720
+
+video_res =

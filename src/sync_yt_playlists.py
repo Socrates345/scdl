@@ -34,7 +34,10 @@ def parse_args():
     p.add_argument("--max-errors", type=int, default=5, metavar="N",
                    help="Abort a playlist after N consecutive errors (default: 5)")
     p.add_argument("--video", action="store_true",
-                   help="Sync video playlists from yt-video-playlists.md (mp4, best quality)")
+                   help="Sync video playlists from yt-video-playlists.md (mp4, 360p unless --res)")
+    p.add_argument("--res", metavar="N",
+                   help="Max video height forwarded to ytdl.py with --video, e.g. 720 or 'best' "
+                        "(default: ytdl.cfg video_res, else 360)")
     p.add_argument("--cookies-from-browser", metavar="BROWSER[:PROFILE]", dest="cookies_from_browser",
                    default=cfg_cookies,
                    help="Browser/profile for cookies forwarded to ytdl.py (overrides ytdl.cfg)")
@@ -201,6 +204,8 @@ def main():
     extra_args: list[str] = []
     if args.video:
         extra_args += ["--video"]
+        if args.res:
+            extra_args += ["--res", args.res]
     if args.cookies:
         extra_args += ["--cookies", args.cookies]
     elif args.cookies_from_browser:

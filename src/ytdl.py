@@ -2,11 +2,13 @@
 """YouTube playlist/channel downloader with sync support, built on yt-dlp.
 
 Usage:
-    python ytdl.py -l URL [--sync] [--path PATH] [--no-playlist-folder]
+    python ytdl.py -l URL [--sync] [--video [--res N|best]] [--path PATH]
+                   [--no-playlist-folder]
                    [--cookies-from-browser BROWSER[:PROFILE]] [--cookies FILE]
                    [--overwrite] [--debug] [--yt-dlp-args ARGSTRING]
 
 Config: copy ytdl.cfg.example to ytdl.cfg and set cookies_from_browser.
+Video downloads are capped at 360p unless --res / ytdl.cfg video_res says otherwise.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import argparse
 import configparser
 import logging
 import shlex
+import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -32,19 +35,41 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
 _YTDLP_STALE_DAYS = 14
+_YTDLP_LATEST_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest"
+_DEFAULT_VIDEO_RES = "360"
+
+
+def _version_tuple(ver: str) -> tuple[int, int, int]:
+    year, month, day = (int(x) for x in ver.split(".")[:3])  # e.g. "2026.06.09"
+    return year, month, day
+
+
+def _latest_ytdlp_version() -> str | None:
+    """Latest stable yt-dlp release tag, or None if GitHub can't be reached."""
+    req = urllib.request.Request(_YTDLP_LATEST_URL, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            # Redirects to .../releases/tag/<version>
+            return resp.url.rstrip("/").rsplit("/", 1)[-1]
+    except OSError:
+        return None
 
 
 def _check_ytdlp_age() -> None:
-    ver = _ytdlp_ver.__version__  # e.g. "2026.06.09"
+    ver = _ytdlp_ver.__version__
     try:
-        parts = [int(x) for x in ver.split(".")]
-        release_date = date(parts[0], parts[1], parts[2])
-        age = (date.today() - release_date).days
-        if age >= _YTDLP_STALE_DAYS:
-            logger.warning(
-                f"[ytdl] yt-dlp is {age} days old (v{ver}). "
-                f"Run: uv sync --upgrade-package yt-dlp"
-            )
+        installed = _version_tuple(ver)
+        age = (date.today() - date(*installed)).days
+        if age < _YTDLP_STALE_DAYS:
+            return
+        # Old, but only worth a warning if upgrading would actually change something.
+        latest = _latest_ytdlp_version()
+        if latest is None or _version_tuple(latest) <= installed:
+            return
+        logger.warning(
+            f"[ytdl] yt-dlp v{ver} is {age} days old and v{latest} is out. "
+            f"Run: uv sync --upgrade-package yt-dlp"
+        )
     except (ValueError, IndexError):
         pass
 
@@ -85,6 +110,17 @@ def _rename_archive_with_title(path: Path, title: str) -> None:
         old = path.with_suffix(ext)
         if old.exists():
             old.rename(new_path.with_suffix(ext))
+
+
+def _parse_res(raw: str) -> int | None:
+    """Max video height for --video ("360", "720p", ...). "best" or 0 means no cap."""
+    value = raw.strip().lower().removesuffix("p")
+    if value == "best":
+        return None
+    height = int(value)
+    if height < 0:
+        raise ValueError(raw)
+    return height or None
 
 
 def _archive_name(url: str) -> str:
@@ -130,6 +166,11 @@ def download(url: str, args: argparse.Namespace) -> None:
             "--js-runtimes", "node",
             "--remote-components", "ejs:github",
         ]
+        res = getattr(args, "res", None)
+        if res:
+            # Prefer the best stream at or below this height; falls back to the
+            # smallest one above it if the video has nothing that low.
+            argv += ["--format-sort", f"res:{res}"]
     else:
         argv = [
             "--format", "bestaudio[ext=m4a]/bestaudio/best",
@@ -193,6 +234,8 @@ def main() -> None:
     cfg = _load_config()
     cfg_cookies = cfg.get("ytdl", "cookies_from_browser", fallback=None) or None
 
+    cfg_res = cfg.get("ytdl", "video_res", fallback=None) or _DEFAULT_VIDEO_RES
+
     # Pre-parse --video so we can select the right default path before building the full parser.
     _pre = argparse.ArgumentParser(add_help=False)
     _pre.add_argument("--video", action="store_true", default=False)
@@ -217,7 +260,10 @@ def main() -> None:
     p.add_argument("--sync", action="store_true",
                    help="Download new tracks, mark removed ones as [unsync]")
     p.add_argument("--video", action="store_true",
-                   help="Download best video+audio (mp4) instead of audio-only (m4a)")
+                   help="Download video+audio (mp4) instead of audio-only (m4a)")
+    p.add_argument("--res", type=_parse_res, metavar="N", default=cfg_res,
+                   help="Max video height for --video, e.g. 360, 720, or 'best' for no cap "
+                        f"(default from ytdl.cfg video_res, else {_DEFAULT_VIDEO_RES})")
     p.add_argument("--path", default=cfg_path_str, metavar="PATH",
                    help="Download directory (default from ytdl.cfg / ytdl.cfg video_path)")
     p.add_argument("-o", "--offset", type=int, metavar="N", default=None,

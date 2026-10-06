@@ -195,11 +195,14 @@ python src/sync_yt_playlists.py --delay 15
 
 Files land in `playlists/yt/<playlist name>/`. Archives in `archive_trackers/yt/`.
 
-## YouTube — Video (mp4, best quality)
+## YouTube — Video (mp4, 360p by default)
 
 ```sh
 # Batch run without playlist (fill "src\videos_bulk.txt" with all the videos urls)
 .\src\dl_videos_bulk_from_txt.bat
+
+# One video (360p)
+python src/ytdl.py -l $VIDEOURL$ --video
 
 # Sync one playlist
 python src/ytdl.py -l https://www.youtube.com/playlist?list=PLxxx --sync --video
@@ -207,7 +210,18 @@ python src/ytdl.py -l https://www.youtube.com/playlist?list=PLxxx --sync --video
 # Sync all playlists listed in src/yt-video-playlists.md
 python src/sync_yt_playlists.py --video
 python src/sync_yt_playlists.py --video --delay 15
+
+# Pick another resolution for this run
+python src/ytdl.py -l $VIDEOURL$ --video --res 720    # up to 720p
+python src/ytdl.py -l $VIDEOURL$ --video --res best   # no cap (best available)
+python src/sync_yt_playlists.py --video --res 720
 ```
+
+Video is capped at **360p** to keep files small: yt-dlp fetches the 360p stream directly,
+nothing is re-encoded. `--res N` picks the best stream at or below `N` (if a video has
+nothing that low, the smallest one above it is used). To change the default for every run,
+set `video_res` in `ytdl.cfg` (`video_res = 720`, or `video_res = best`). Videos already
+downloaded keep the quality they were downloaded at.
 
 
 Files land in `playlists/yt-video/<playlist name>/`. Archives in `archive_trackers/yt-video/`.
@@ -309,7 +323,7 @@ src/
   yt-video-playlists.md     # YouTube video playlist URLs (gitignored)
 
 scdl/scdl.cfg         # SC config: client_id, auth_token, path, name_format (gitignored)
-ytdl.cfg              # YT config: cookies_from_browser, path, video_path (gitignored)
+ytdl.cfg              # YT config: cookies_from_browser, path, video_path, video_res (gitignored)
 ```
 
 Archive line format: `soundcloud <track_id> <absolute_path>` (SC) or `youtube <video_id> <absolute_path>` (YT).
