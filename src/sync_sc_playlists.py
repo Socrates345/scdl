@@ -62,6 +62,50 @@ def _label(url: str) -> str:
     return path.replace("/sets/", " / ").replace("/", " / ")
 
 
+def _list_urls() -> list[str]:
+    """Playlist URLs in sc-playlists-list.md, in line order."""
+    return [
+        line.strip()
+        for line in PLAYLIST_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("http")
+    ]
+
+
+_TOKEN_SUFFIX_RE = re.compile(r"^(.+?)(?:_s-[A-Za-z0-9]+)?$")
+
+
+def _carry_over_archive(url: str, write) -> None:
+    """
+    When a playlist's secret link changes (new s-<token> in the URL, or a public
+    playlist made private), its archive name changes too. Rename the archive left
+    behind by the old link to the new name so the sync picks up where it was.
+    Only an archive with the same user + slug that no other listed URL uses counts.
+    """
+    new = archive_path(url)
+    if not is_empty(new):
+        return
+    prefix = _TOKEN_SUFFIX_RE.match(new.stem).group(1)
+    claimed = {archive_path(u).stem for u in _list_urls()}
+    candidates = [
+        p for p in ARCHIVE_DIR.glob("*.txt")
+        if p.stem not in claimed
+        and _TOKEN_SUFFIX_RE.match(p.stem).group(1) == prefix
+        and not is_empty(p)
+    ]
+    if not candidates:
+        return
+    if len(candidates) > 1:
+        names = ", ".join(p.name for p in candidates)
+        write(f"  [carry-over] several old archives match ({names}) — skipped, full sync instead.")
+        return
+    old = candidates[0]
+    for suffix in (".txt", ".failed", ".premium"):
+        src = old.with_suffix(suffix)
+        if src.exists():
+            src.replace(new.with_suffix(suffix))
+    write(f"  [carry-over] {old.name} → {new.name}")
+
+
 # ---------------------------------------------------------------------------
 # Resume state
 # ---------------------------------------------------------------------------
@@ -97,10 +141,11 @@ def _archive_ids(url: str) -> set[str]:
     return ids
 
 
-def _fetch_ids_at(url: str, items: str) -> list[str] | None:
+def _fetch_ids_at(url: str, items: str) -> list[str] | str | None:
     """
     Fetch track IDs for the given playlist-items range via yt-dlp Python API.
-    Returns a list (possibly empty if range is past end) or None on error.
+    Returns a list (possibly empty if range is past end), _GONE if the playlist
+    URL itself returns 404, or None on any other error.
 
     Uses the API directly instead of a subprocess to avoid Windows console
     output bypass (WriteConsoleW leaks through capture_output=True on Windows).
@@ -122,47 +167,55 @@ def _fetch_ids_at(url: str, items: str) -> list[str] | None:
                 if entry and entry.get("id"):
                     ids.append(str(entry["id"]))
         return ids
-    except Exception:
-        return None
+    except Exception as e:
+        return _GONE if "HTTP Error 404" in str(e) else None
 
 
 _FULL_SYNC = "full"
 _SKIP = "skip"
+_STALE = "stale"
+_GONE = "gone"
 
 
-def _fast_path(url: str) -> str | int:
+def _fast_path(url: str, force_all: bool = False) -> str | int:
     """
     Determine the sync strategy for this playlist.
 
     Returns:
+      _STALE      — link is dead (404 or 0 tracks), e.g. secret link reset or playlist
+                    made private; don't run scdl, the user needs a fresh share link
       _FULL_SYNC  — run a full scdl --sync (new playlist, sanity failure, or --force-all)
       _SKIP       — nothing new, skip entirely
       int N       — run scdl with -o N (start downloading from position N)
 
     Algorithm (assumes new tracks are appended to the END of the playlist):
-      1. N = number of tracks in the local archive (= songs we already have).
-      2. Fetch the first _SANITY_N SC track IDs (the oldest songs in the playlist).
-         They should all be in the archive. If none match, the playlist may have been
-         replaced or drastically reshuffled → full sync.
+      1. Fetch the first _SANITY_N SC track IDs (the oldest songs in the playlist).
+         404 or nothing at all → stale link. Done even for new playlists and --force-all.
+      2. N = number of tracks in the local archive (= songs we already have).
+         The fetched IDs should be in the archive. If none match, the playlist may have
+         been replaced or drastically reshuffled → full sync.
       3. Check whether position N+1 exists on SC.
          No  → playlist unchanged → skip.
          Yes → new songs start at N+1 → run scdl with -o N+1.
     """
+    heads = _fetch_ids_at(url, f"1:{_SANITY_N}")
+    if heads == _GONE or heads == []:
+        return _STALE
+    if not isinstance(heads, list):
+        return _FULL_SYNC  # pre-scan failed
+
     known = _archive_ids(url)
     N = len(known)
-    if N == 0:
-        return _FULL_SYNC  # new playlist
+    if force_all or N == 0:
+        return _FULL_SYNC  # forced, or new playlist
 
     # Sanity check: oldest songs (positions 1.._SANITY_N) should be in archive
-    heads = _fetch_ids_at(url, f"1:{_SANITY_N}")
-    if heads is None:
-        return _FULL_SYNC  # pre-scan failed
     if not any(tid in known for tid in heads):
         return _FULL_SYNC  # none of first 3 recognised → playlist mismatch
 
     # Check if a new song exists at position N+1
     next_ids = _fetch_ids_at(url, f"{N + 1}:{N + 1}")
-    if next_ids is None:
+    if not isinstance(next_ids, list):
         return _FULL_SYNC  # check failed
     if not next_ids:
         return _SKIP  # nothing at N+1 → playlist unchanged
@@ -174,8 +227,10 @@ def _fast_path(url: str) -> str | int:
 # Output filtering
 # ---------------------------------------------------------------------------
 
+_STALE_MARKER = "Stale playlist URL"  # logged by SyncDownloadHelper.post_download
+
 _SHOW_STARTS = ("ERROR:", "WARNING:")
-_SHOW_IN = ("[download] Destination:", "Playlist renamed")
+_SHOW_IN = ("[download] Destination:", "Playlist renamed", _STALE_MARKER)
 _HIDE_STARTS = (
     "[soundcloud]", "[info]", "[debug]", "[MutagenPP]", "[Merger]",
     "[ExtractAudio]", "[ThumbnailsConvertor]", "[ThumbnailPP]",
@@ -236,8 +291,9 @@ def run_scdl(
 ) -> tuple[bool, bool, bool, list[str], dict]:
     """
     Returns (success, aborted, is_conn_error, error_lines, stats).
-    stats: {"downloaded": int, "skipped": bool}
+    stats: {"downloaded": int, "skipped": bool, "stale": bool}
       skipped=True means the fast-path determined nothing is new (no scdl run).
+      stale=True means the link is dead (404 / 0 tracks) and needs replacing.
 
     write: callable for printing filtered output lines (default: print).
            Pass tqdm.write when inside a tqdm loop so lines appear above the bar.
@@ -245,10 +301,13 @@ def run_scdl(
     if write is None:
         write = print
 
-    strategy = _FULL_SYNC if force_all else _fast_path(url)
+    _carry_over_archive(url, write)
+    strategy = _fast_path(url, force_all)
 
+    if strategy == _STALE:
+        return False, False, False, [], {"downloaded": 0, "skipped": True, "stale": True}
     if strategy == _SKIP:
-        return True, False, False, [], {"downloaded": 0, "skipped": True}
+        return True, False, False, [], {"downloaded": 0, "skipped": True, "stale": False}
 
     cmd = [
         "scdl", "-l", url, "--sync", "--path", str(SC_PLAYLIST_DIR),
@@ -271,10 +330,14 @@ def run_scdl(
     is_conn_error = False
     error_lines: list[str] = []
     downloaded = 0
+    stale = False
 
     for line in proc.stdout:
         if any(m in line for m in _CONN_ERRORS):
             is_conn_error = True
+
+        if _STALE_MARKER in line:
+            stale = True
 
         if line.startswith("ERROR:"):
             has_error = True
@@ -303,7 +366,9 @@ def run_scdl(
 
     proc.wait()
     success = proc.returncode == 0 and not has_error
-    return success, aborted, is_conn_error, error_lines, {"downloaded": downloaded, "skipped": False}
+    return success, aborted, is_conn_error, error_lines, {
+        "downloaded": downloaded, "skipped": False, "stale": stale,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +384,10 @@ def sync_list(
     label: str = "",
     _state_urls: list[str] | None = None,
     _state_offset: int = 0,
-) -> list[str]:
-    """Sync URLs in order. Returns list of failed URLs."""
+) -> tuple[list[str], list[str]]:
+    """Sync URLs in order. Returns (failed URLs, stale-link URLs)."""
     failed: list[str] = []
+    stale: list[str] = []
     total = len(urls)
 
     with tqdm(total=total, desc=f"{label}playlists", unit="pl", dynamic_ncols=True) as pbar:
@@ -336,7 +402,9 @@ def sync_list(
             )
             elapsed = time.time() - t0
 
-            if stats["skipped"]:
+            if stats["stale"] and stats["skipped"]:
+                tqdm.write("  → STALE LINK (404 / 0 tracks) — replace it in sc-playlists-list.md")
+            elif stats["skipped"]:
                 tqdm.write("  → up to date")
             else:
                 parts: list[str] = []
@@ -344,9 +412,13 @@ def sync_list(
                     parts.append(f"{stats['downloaded']} downloaded")
                 if error_lines:
                     parts.append(f"{len(error_lines)} error(s)")
+                if stats["stale"]:
+                    parts.append("STALE LINK?")
                 tqdm.write(f"  → {', '.join(parts) or 'nothing new'} ({elapsed:.0f}s)")
 
-            if not ok:
+            if stats["stale"]:
+                stale.append(url)
+            elif not ok:
                 failed.append(url)
 
             pbar.update(1)
@@ -370,7 +442,7 @@ def sync_list(
                     tqdm.write(f"  Waiting {wait:.1f}s... ({total - i} remaining)")
                     time.sleep(wait)
 
-    return failed
+    return failed, stale
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +454,7 @@ def main():
     args = parse_args()
     _verbose = args.verbose
 
-    raw_urls = [
-        line.strip()
-        for line in PLAYLIST_FILE.read_text(encoding="utf-8").splitlines()
-        if line.strip().startswith("http")
-    ]
+    raw_urls = _list_urls()
     if not raw_urls:
         print("No URLs found in sc-playlists-list.md")
         sys.exit(1)
@@ -399,11 +467,11 @@ def main():
             done = state["completed"]
             remaining = all_urls[done:]
             print(f"Resuming from {done + 1}/{len(all_urls)} ({len(remaining)} remaining).\n")
-            failed = sync_list(
+            failed, stale = sync_list(
                 remaining, args.delay, args.max_errors, args.force_all,
                 track_state=True, _state_urls=all_urls, _state_offset=done,
             )
-            _finalize(failed)
+            _finalize(failed, stale)
             return
         print("No interrupted run found — starting fresh.\n")
         _clear_state()
@@ -432,8 +500,8 @@ def main():
     print()
 
     _save_state(to_run, 0)
-    failed = sync_list(to_run, args.delay, args.max_errors, args.force_all, track_state=True)
-    _finalize(failed)
+    failed, stale = sync_list(to_run, args.delay, args.max_errors, args.force_all, track_state=True)
+    _finalize(failed, stale)
 
 
 _FAIL_TAG_RE = re.compile(r"^\[FAIL\]", re.MULTILINE)
@@ -465,10 +533,25 @@ def _run_youtube_retry(urls: list[str]) -> None:
         subprocess.run([sys.executable, str(script), stem], check=False)
 
 
-def _finalize(failed: list[str]) -> None:
+def _report_stale(stale: list[str]) -> None:
+    lines = {u: j for j, u in enumerate(_list_urls(), 1)}
+    print(f"\n{len(stale)} playlist link(s) look STALE (404 or 0 tracks) — secret link reset or")
+    print("playlist made private. Open it on SoundCloud → Share → copy link, and replace the line")
+    print("in sc-playlists-list.md (the ?si=... part doesn't matter, the s-<token> does):")
+    for u in stale:
+        line = f"line {lines[u]:2}" if u in lines else "line ?"
+        print(f"  {line}: {_label(u)}\n           {u}")
+
+
+def _finalize(failed: list[str], stale: list[str]) -> None:
+    if stale:
+        _report_stale(stale)
+
     if not failed:
-        print("\nAll done.")
+        print("\nAll done." if not stale else "\nDone — replace the stale link(s) above.")
         _clear_state()
+        if stale:
+            sys.exit(1)
         return
 
     print(f"\n{len(failed)} playlist(s) failed:")

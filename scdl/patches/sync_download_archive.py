@@ -144,6 +144,16 @@ class SyncDownloadHelper:
         offset = self._scdl_args.get("o")
         not_evaluated = self._preexisting - self._downloaded if offset else set()
 
+        # None of the archived tracks showed up: the URL most likely no longer points at
+        # this playlist (secret link reset, playlist made private → 404 / 0 tracks).
+        # Don't treat the whole archive as removed — keep it and skip [unsync].
+        if not offset and self._preexisting and not (self._preexisting & self._downloaded):
+            logger.warning(
+                f"[scdl] Stale playlist URL? None of the {len(self._preexisting)} archived tracks "
+                "were found — skipping [unsync]. Get a fresh share link."
+            )
+            not_evaluated = self._preexisting - self._downloaded
+
         # rename files for tracks no longer in the playlist
         to_unsync = {
             key: self._all_files[key]

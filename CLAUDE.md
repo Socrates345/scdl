@@ -70,7 +70,7 @@ The main entry point. `_main()` parses CLI args (docopt), loads `scdl.cfg`, then
 
 Custom yt-dlp post/pre-processors injected into the `YoutubeDL` instance in `download_url()`:
 
-- `sync_download_archive.py` — `SyncDownloadHelper` manages the `--sync` archive file. It hooks into `_match_entry` to track which IDs are seen, then in `post_download()` renames removed tracks to `[unsync] <name>` and rewrites the archive. It also detects playlist renames and moves files accordingly.
+- `sync_download_archive.py` — `SyncDownloadHelper` manages the `--sync` archive file. It hooks into `_match_entry` to track which IDs are seen, then in `post_download()` renames removed tracks to `[unsync] <name>` and rewrites the archive. If **none** of the archived tracks were seen, it assumes a dead URL rather than an emptied playlist: it keeps the archive, skips `[unsync]`, and logs `Stale playlist URL?`, which `sync_sc_playlists.py` picks up. It also detects playlist renames and moves files accordingly.
 - `mutagen_postprocessor.py` — replaces yt-dlp's built-in EmbedThumbnail/FFmpegMetadata with a mutagen-based one for better format support.
 - `switch_outtmpl_preprocessor.py` (`OuttmplPP`) — switches the output template between a standalone-track format and a playlist-track format based on `info_dict["playlist"]`.
 - `original_filename_preprocessor.py` — uses the SC original filename for original-quality downloads.
@@ -82,9 +82,11 @@ Custom yt-dlp post/pre-processors injected into the `YoutubeDL` instance in `dow
 
 Reads playlist URLs from `src/sc-playlists-list.md` (one `https://...` URL per line). **Indices follow line order in that file** — line 1 = `--only 1`, line 15 = `--only 15`. No sorting is applied; the user controls order via the file.
 
-For each URL, unless `--force-all` is passed:
+For each URL:
 
-1. **Fast-path** (`_fast_path()`): uses yt-dlp's Python API (no subprocess) to fetch track IDs. First checks the 3 oldest tracks (positions 1–3) as a playlist identity sanity check, then checks position N+1 (where N = archive count) to see if anything new exists. If nothing at N+1 → skip entirely. If something found → run scdl with `-o N+1`.
+0. **Archive carry-over** (`_carry_over_archive()`): archive names include the secret token (`<user>_<slug>_s-<token>.txt`). When the user pastes a new share link with a different token (or a public playlist became private), an unclaimed non-empty archive with the same `<user>_<slug>` is renamed to the new name, along with its `.failed`/`.premium` files.
+
+1. **Fast-path** (`_fast_path()`): uses yt-dlp's Python API (no subprocess) to fetch track IDs. It always fetches the 3 oldest tracks (positions 1–3) first, even for new playlists and `--force-all`. A **404 or 0 tracks → stale link**: scdl is not run and the playlist is listed at the end with its line number so the user can paste a fresh share link. The `?si=` param is irrelevant; the `s-<token>` is what expires. Unless `--force-all` is passed, those IDs then serve as a playlist identity sanity check, and position N+1 (where N = archive count) is checked to see if anything new exists. If nothing at N+1 → skip entirely. If something found → run scdl with `-o N+1`.
 
 2. **`run_scdl()`**: runs `scdl --sync --hide-progress` as a subprocess. Filters output to show only new downloads, errors, and warnings. The consecutive-error counter resets on any `[soundcloud]` processing line (not just active download progress), so scattered errors don't falsely trigger the rate-limit abort.
 
