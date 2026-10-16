@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 from tqdm import tqdm
 
+from cleanup_empty_archives import delete_empty
+
 _ROOT = Path(__file__).parent.parent
 PLAYLIST_FILE = Path(__file__).parent / "sc-playlists-list.md"
 ARCHIVE_DIR = _ROOT / "archive_trackers" / "sc"
@@ -544,6 +546,10 @@ def _report_stale(stale: list[str]) -> None:
 
 
 def _finalize(failed: list[str], stale: list[str]) -> None:
+    removed = delete_empty(ARCHIVE_DIR)
+    if removed:
+        print(f"\nRemoved {len(removed)} empty file(s) from archive_trackers/sc.")
+
     if stale:
         _report_stale(stale)
 

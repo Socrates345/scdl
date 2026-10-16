@@ -92,6 +92,8 @@ For each URL:
 
 3. **After each playlist**: saves resume state to `.sync-state.json`. Use `--resume` to pick up where a run was interrupted.
 
+4. **At the end** (`_finalize()`): deletes every 0-byte file in `archive_trackers/sc` via `src/cleanup_empty_archives.py`, which can also be run standalone. Empty `.failed` files are left behind by every clean run, and an empty `.txt` means the same as a missing one.
+
 `--force-all` disables the fast-path and runs a full scdl sync for every playlist — the only mode that detects removed tracks (`[unsync]`).
 
 ### Data Layout
